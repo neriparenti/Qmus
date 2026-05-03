@@ -1,0 +1,2 @@
+*.db filter=lfs diff=lfs merge=lfs -text
+C:/Users/User/AndroidStudioProjects/ArabicDictionary2/app/src/main/assets filter=lfs diff=lfs merge=lfs -text
