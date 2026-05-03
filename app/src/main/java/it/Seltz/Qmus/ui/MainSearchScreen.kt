@@ -65,11 +65,23 @@ fun MainSearchScreen(
     fun doSearch(t: String): List<Map<String, String>> {
         return when {
             t.startsWith("\"") && t.endsWith("\"") -> {
-                val exact = db.searchEnglishStarting(t.removeSurrounding("\""))
-                if (exact.isNotEmpty()) exact
-                else db.searchEnglish(t.removeSurrounding("\""))
+                val clean = t.removeSurrounding("\"")
+                val isArabic = clean.any { it in '\u0621'..'\u064A' }
+                if (isArabic) {
+                    val exact = db.searchByArabicText(clean)
+                    android.util.Log.d("SEARCH_DEBUG", "Exact arabic search for '$clean': found=${exact?.get("word")}, pos=${exact?.get("pos")}")
+                    if (exact != null) listOf(exact) else db.searchArabic(clean)
+                } else {
+                    val exact = db.searchEnglishStarting(clean)
+                    if (exact.isNotEmpty()) exact
+                    else db.searchEnglish(clean)
+                }
             }
-            t.contains("*") || t.contains("?") -> db.searchWildcard(t)
+            t.contains("*") || t.contains("?") -> {
+                val isArabic = t.any { it in '\u0621'..'\u064A' }
+                if (isArabic) db.searchWildcard(t)
+                else db.searchEnglishWildcard(t)
+            }
             searchMode == SearchMode.ARABIC -> {
                 val d = db.searchArabic(t)
                 val exactMatch = d.filter { it["word"] == t }
@@ -133,8 +145,14 @@ fun MainSearchScreen(
                                 return@launch
                             }
                             results = withContext(Dispatchers.IO) {
-                                if (selectedTag != null) db.searchByTag(selectedTag!!, t)
-                                else doSearch(t)
+                                android.util.Log.d("SEARCH_DEBUG", "Calling search: tag=$selectedTag, query='$t'")
+                                if (selectedTag != null) {
+                                    val res = db.searchByTag(selectedTag!!, t)
+                                    android.util.Log.d("SEARCH_DEBUG", "searchByTag returned ${res.size} results")
+                                    res
+                                } else {
+                                    doSearch(t)
+                                }
                             }
                             searching = false
                         }

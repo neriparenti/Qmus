@@ -88,7 +88,10 @@ class DictDatabase(context: Context) : SQLiteOpenHelper(context.applicationConte
 
     fun searchArabic(q: String) = query(
         "SELECT w.*, GROUP_CONCAT(s.definition, ' ||| ') as defs FROM words w LEFT JOIN senses s ON w.id = s.${getFkCol(readableDatabase)} WHERE w.word LIKE ? || '%' OR w.romanized LIKE ? || '%' GROUP BY w.id ORDER BY w.frequency_rank ASC, w.word ASC LIMIT 30", q, q
-    )
+    ).also {
+        android.util.Log.d("SEARCH_DEBUG", "searchArabic('$q') returned ${it.size} results")
+        if (it.isNotEmpty()) it.take(3).forEach { r -> android.util.Log.d("SEARCH_DEBUG", "  ${r["word"]}") }
+    }
 
     fun searchEnglish(q: String): List<Map<String, String>> {
         val cleanQ = q.trim().lowercase()
@@ -132,6 +135,13 @@ class DictDatabase(context: Context) : SQLiteOpenHelper(context.applicationConte
         ORDER BY w.frequency_rank ASC 
         LIMIT 30""",
             cleanQ, cleanQ, cleanQ
+        )
+    }
+
+    fun searchEnglishWildcard(q: String): List<Map<String, String>> {
+        return query(
+            "SELECT DISTINCT w.*, GROUP_CONCAT(s.definition, ' ||| ') as defs FROM words w LEFT JOIN senses s ON w.id = s.${getFkCol(readableDatabase)} WHERE s.definition LIKE ? GROUP BY w.id ORDER BY w.frequency_rank ASC LIMIT 50",
+            q.trim().replace("*", "%").replace("?", "_")
         )
     }
 
@@ -240,45 +250,95 @@ class DictDatabase(context: Context) : SQLiteOpenHelper(context.applicationConte
     // ==================== TAG SEARCH ====================
 
     fun searchByTag(tag: String, query: String = ""): List<Map<String, String>> {
-        val db = readableDatabase
-        val fk = getFkCol(db)
         val cleanQuery = query.trim().removeSurrounding("\"")
         val exactSearch = query.trim().startsWith("\"") && query.trim().endsWith("\"")
+        val isArabic = cleanQuery.any { it in '\u0621'..'\u064A' }
 
-        // If no query, just filter by tag
         if (cleanQuery.isBlank()) {
             return searchByTagOnly(tag)
         }
 
-        // If there's a query, do a normal search first, then filter by tag
         val searchResults = when {
+            isArabic && exactSearch -> searchArabicExact(cleanQuery)
+            isArabic && (query.contains("*") || query.contains("?")) -> searchArabicWildcard(query)
+            isArabic -> searchArabic(cleanQuery)
             exactSearch -> searchExact(cleanQuery)
-            query.contains("*") || query.contains("?") -> searchWildcard(query)
+            query.contains("*") || query.contains("?") -> searchEnglishWildcard(query)
             else -> searchEnglish(query)
         }
 
-        // Filter results by tag
-        return searchResults.filter { word ->
-            when (tag) {
-                "noun" -> word["pos"] == "noun"
-                "adjective" -> word["pos"] == "adj" || word["type"] == "adjective"
-                "verb" -> word["pos"] == "verb"
-                "feminine" -> word["gender"] == "feminine"
-                "plural" -> {
-                    val defs = word["defs"] ?: ""
-                    word["number"] == "plural" || defs.startsWith("plural of", ignoreCase = true)
-                }
-                "masdar" -> {
-                    val defs = word["defs"] ?: ""
-                    (defs.startsWith("verbal noun of", ignoreCase = true) || (word["masdar"] ?: "").isNotBlank())
-                            && word["type"] != "verb"
-                }
-                "alt_form" -> {
-                    val defs = word["defs"] ?: ""
-                    defs.startsWith("alternative form of", ignoreCase = true)
-                }
-                else -> word["pos"] == tag
+        // Fallback: if Arabic search returns nothing, try without last letter
+        // Fallback: if Arabic search returns nothing, try findLemma for conjugated forms
+        val finalResults = if (isArabic && searchResults.isEmpty()) {
+            val lemma = findLemma(cleanQuery)
+            if (lemma != null) {
+                android.util.Log.d("SEARCH_DEBUG", "findLemma('$cleanQuery') found: ${lemma["word"]}")
+                listOf(lemma)
+            } else if (cleanQuery.length > 1) {
+                // Try without last letter
+                val fallback = searchArabic(cleanQuery.dropLast(1))
+                android.util.Log.d("SEARCH_DEBUG", "Fallback: '${cleanQuery.dropLast(1)}' returned ${fallback.size} results")
+                fallback
+            } else {
+                searchResults
             }
+        } else {
+            searchResults
+        }
+
+        // Filter by tag
+        val taggedResults = finalResults.filter { word -> matchesTag(word, tag) }
+
+        // For Arabic results, detect if it's a form of another word (e.g. feminine, plural)
+        val enrichedResults = if (isArabic && taggedResults.isNotEmpty()) {
+            taggedResults.map { word ->
+                val searchedWord = cleanQuery
+                val foundWord = word["word"] ?: ""
+                if (searchedWord != foundWord) {
+                    val mutable = word.toMutableMap()
+                    val conjugatedForm = searchedWord
+                    mutable["forms_info"] = when {
+                        conjugatedForm.endsWith("َة") || conjugatedForm.endsWith("ة") -> "fem"
+                        conjugatedForm.endsWith("َات") || conjugatedForm.endsWith("ات") -> "pl fem"
+                        conjugatedForm.endsWith("ِينَ") || conjugatedForm.endsWith("ين") -> "pl obl"
+                        conjugatedForm.endsWith("ُونَ") || conjugatedForm.endsWith("ون") -> "pl masc nom"
+                        conjugatedForm.endsWith("َانِ") || conjugatedForm.endsWith("ان") -> "dual nom"
+                        conjugatedForm.endsWith("َيْنِ") || conjugatedForm.endsWith("ين") -> "dual obl"
+                        else -> "form"
+                    }
+                    mutable["conjugated_form"] = conjugatedForm
+                    mutable as Map<String, String>
+                } else {
+                    word
+                }
+            }
+        } else {
+            taggedResults
+        }
+
+        return enrichedResults
+    }
+
+    private fun matchesTag(word: Map<String, String>, tag: String): Boolean {
+        return when (tag) {
+            "noun" -> word["pos"] == "noun"
+            "adjective" -> word["pos"] == "adj" || word["type"] == "adjective"
+            "verb" -> word["pos"] == "verb"
+            "feminine" -> word["gender"] == "feminine"
+            "plural" -> {
+                val defs = word["defs"] ?: ""
+                word["number"] == "plural" || defs.startsWith("plural of", ignoreCase = true)
+            }
+            "masdar" -> {
+                val defs = word["defs"] ?: ""
+                (defs.startsWith("verbal noun of", ignoreCase = true) || (word["masdar"] ?: "").isNotBlank())
+                        && word["type"] != "verb"
+            }
+            "alt_form" -> {
+                val defs = word["defs"] ?: ""
+                defs.startsWith("alternative form of", ignoreCase = true)
+            }
+            else -> word["pos"] == tag
         }
     }
 
@@ -314,6 +374,20 @@ class DictDatabase(context: Context) : SQLiteOpenHelper(context.applicationConte
             }
         }
         return results
+    }
+
+    private fun searchArabicExact(q: String): List<Map<String, String>> {
+        val exact = query(
+            "SELECT w.*, GROUP_CONCAT(s.definition, ' ||| ') as defs FROM words w LEFT JOIN senses s ON w.id = s.${getFkCol(readableDatabase)} WHERE w.word = ? GROUP BY w.id ORDER BY w.frequency_rank ASC LIMIT 30", q
+        )
+        return if (exact.isNotEmpty()) exact else searchArabic(q)
+    }
+
+    private fun searchArabicWildcard(q: String): List<Map<String, String>> {
+        return query(
+            "SELECT DISTINCT w.*, GROUP_CONCAT(s.definition, ' ||| ') as defs FROM words w LEFT JOIN senses s ON w.id = s.${getFkCol(readableDatabase)} WHERE w.word LIKE ? GROUP BY w.id ORDER BY w.frequency_rank ASC LIMIT 50",
+            q.trim().replace("*", "%").replace("?", "_")
+        )
     }
 
     fun getAllTags(): List<String> {
