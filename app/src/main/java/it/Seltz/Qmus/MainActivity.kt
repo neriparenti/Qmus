@@ -2,7 +2,6 @@ package it.Seltz.Qmus
 
 import it.Seltz.Qmus.data.VocalizedLoader
 import android.util.Log
-import it.Seltz.Qmus.data.conjugation.ConjugationManager
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -22,10 +21,7 @@ import it.Seltz.Qmus.ui.MainApp
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        ConjugationManager.load(this)
         VocalizedLoader.load(this)
-        Log.d("MAIN_DEBUG", "Coniugazioni caricate: ${ConjugationManager.loaded}")
-        Log.d("MAIN_DEBUG", "Verbi disponibili: ${ConjugationManager.getForms("كَتَبَ").size}")
         try { DictDatabase.getInstance(this).readableDatabase } catch (_: Exception) {}
         setContent {
             MaterialTheme(colorScheme = lightColorScheme(

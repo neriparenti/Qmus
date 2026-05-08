@@ -90,8 +90,8 @@ fun MainSearchScreen(
                 } else if (d.isNotEmpty()) {
                     d
                 } else {
-                    val l = db.findLemma(t)
-                    if (l != null) listOf(l) else emptyList()
+                    val lemma = db.findLemmaByForm(t)
+                    if (lemma != null) listOf(lemma) else emptyList()
                 }
             }
             else -> db.searchEnglish(t)

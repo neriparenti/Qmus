@@ -3,7 +3,6 @@ package it.Seltz.Qmus
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import it.Seltz.Qmus.data.conjugation.ConjugationManager
 import it.Seltz.Qmus.data.DictDatabase
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -21,7 +20,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             // without blocking the main UI thread
             try {
                 DictDatabase.getInstance(application).readableDatabase
-                ConjugationManager.load(application)
             } catch (e: Exception) {
                 // In the future: show a StateFlow to show
                 // a messagge to the user if the DB won't load

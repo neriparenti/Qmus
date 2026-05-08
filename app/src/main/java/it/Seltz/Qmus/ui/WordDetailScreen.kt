@@ -264,7 +264,9 @@ fun WordDetailScreen(word: Map<String, String>, onWordClick: (String) -> Unit, o
                         root = root,
                         verbForm = word["verb_form"] ?: "",
                         romanized = romanized,
-                        pos = pos
+                        pos = pos,
+                        verbPattern = word["verb_pattern"] ?: "",
+                        wordId = word["id"] ?: ""
                     )
                 }
             }

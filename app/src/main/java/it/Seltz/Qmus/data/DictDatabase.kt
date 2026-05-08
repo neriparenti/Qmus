@@ -60,38 +60,9 @@ class DictDatabase(context: Context) : SQLiteOpenHelper(context.applicationConte
         return results
     }
 
-    // ==================== BUILD TAG FILTER HELPER ====================
-
-    private fun buildTagFilter(
-        tagCondition: String,
-        cleanQuery: String,
-        exactSearch: Boolean,
-        tagArgs: MutableList<String>,
-        args: MutableList<String>
-    ): String {
-        args.addAll(tagArgs)
-
-        return if (cleanQuery.isNotBlank()) {
-            if (exactSearch) {
-                args.add(cleanQuery)
-                "AND s.definition = ?"
-            } else {
-                args.add(cleanQuery)
-                args.add(cleanQuery)
-                args.add(cleanQuery)
-                "AND (w.word LIKE ? || '%' OR w.romanized LIKE ? || '%' OR s.definition LIKE '%' || ? || '%')"
-            }
-        } else ""
-    }
-
-    // ==================== BASIC SEARCH ====================
-
     fun searchArabic(q: String) = query(
         "SELECT w.*, GROUP_CONCAT(s.definition, ' ||| ') as defs FROM words w LEFT JOIN senses s ON w.id = s.${getFkCol(readableDatabase)} WHERE w.word LIKE ? || '%' OR w.romanized LIKE ? || '%' GROUP BY w.id ORDER BY w.frequency_rank ASC, w.word ASC LIMIT 30", q, q
-    ).also {
-        android.util.Log.d("SEARCH_DEBUG", "searchArabic('$q') returned ${it.size} results")
-        if (it.isNotEmpty()) it.take(3).forEach { r -> android.util.Log.d("SEARCH_DEBUG", "  ${r["word"]}") }
-    }
+    )
 
     fun searchEnglish(q: String): List<Map<String, String>> {
         val cleanQ = q.trim().lowercase()
@@ -138,13 +109,6 @@ class DictDatabase(context: Context) : SQLiteOpenHelper(context.applicationConte
         )
     }
 
-    fun searchEnglishWildcard(q: String): List<Map<String, String>> {
-        return query(
-            "SELECT DISTINCT w.*, GROUP_CONCAT(s.definition, ' ||| ') as defs FROM words w LEFT JOIN senses s ON w.id = s.${getFkCol(readableDatabase)} WHERE s.definition LIKE ? GROUP BY w.id ORDER BY w.frequency_rank ASC LIMIT 50",
-            q.trim().replace("*", "%").replace("?", "_")
-        )
-    }
-
     fun searchById(id: String) = query(
         "SELECT w.*, GROUP_CONCAT(s.definition, ' ||| ') as defs FROM words w LEFT JOIN senses s ON w.id = s.${getFkCol(readableDatabase)} WHERE w.id = ? GROUP BY w.id LIMIT 1", id
     ).firstOrNull()
@@ -187,49 +151,21 @@ class DictDatabase(context: Context) : SQLiteOpenHelper(context.applicationConte
         )
     }
 
-    fun findLemma(conjugatedWord: String): Map<String, String>? {
-        val norm = normalizeArabicForSearch(conjugatedWord)
-        val result = query(
-            "SELECT w.*, GROUP_CONCAT(s.definition, ' ||| ') as defs, f.form as conjugated_form, f.normalizedArabic as norm_form " +
-                    "FROM words w INNER JOIN forms f ON w.id = f.word_id " +
-                    "LEFT JOIN senses s ON w.id = s.${getFkCol(readableDatabase)} " +
-                    "WHERE f.normalizedArabic = ? GROUP BY w.id LIMIT 1", norm
-        ).firstOrNull()
-
-        if (result != null) {
-            val conjugatedForm = result["conjugated_form"] ?: ""
-            val word = result["word"] ?: ""
-
-            val formInfo = when {
-                conjugatedForm.endsWith("َانِ") -> "dual nom"
-                conjugatedForm.endsWith("َيْن") -> "dual obl / pl masc obl"
-                conjugatedForm.endsWith("ُونَ") -> "pl masc nom"
-                conjugatedForm.endsWith("َات") || conjugatedForm.endsWith("اتِ") -> "pl fem"
-                conjugatedForm.endsWith("َة") || conjugatedForm.endsWith("َةٌ") -> "fem"
-                word != conjugatedForm -> "form"
-                else -> ""
-            }
-
-            if (formInfo.isNotBlank()) {
-                return result.toMutableMap().also { it["forms_info"] = formInfo }
-            }
-            return result
-        }
-
-        return searchByArabicText(conjugatedWord)
-    }
-
     fun searchAllByArabicText(text: String) = query(
         "SELECT w.*, GROUP_CONCAT(s.definition, ' ||| ') as defs FROM words w LEFT JOIN senses s ON w.id = s.${getFkCol(readableDatabase)} WHERE w.word = ? GROUP BY w.id ORDER BY w.frequency_rank ASC LIMIT 10", normalizeArabicForSearch(text)
     )
 
-    // ==================== ROOTS ====================
-
     fun searchByRoot(rq: String): List<Map<String, String>> {
         val clean = rq.replace(Regex("[\\s\\-،آأةؤإئ\\u064B-\\u065F]"), "")
         if (clean.length < 3) return emptyList()
+        return query("SELECT w.*, GROUP_CONCAT(s.definition, ' ||| ') as defs FROM words w LEFT JOIN senses s ON w.id = s.${getFkCol(readableDatabase)} WHERE REPLACE(REPLACE(REPLACE(w.root, ' ', ''), '-', ''), 'ـ', '') = ? GROUP BY w.id ORDER BY w.frequency_rank ASC LIMIT 100", clean)
+    }
+
+
+    fun getVerbFormsWithMetadata(wordId: String): List<Map<String, String>> {
         return query(
-            "SELECT w.*, GROUP_CONCAT(s.definition, ' ||| ') as defs FROM words w LEFT JOIN senses s ON w.id = s.${getFkCol(readableDatabase)} WHERE REPLACE(REPLACE(REPLACE(w.root, ' ', ''), '-', ''), 'ـ', '') = ? GROUP BY w.id ORDER BY w.frequency_rank ASC LIMIT 100", clean
+            "SELECT form, tense, mood, voice, person, gender, number FROM forms WHERE word_id = ?",
+            wordId
         )
     }
 
@@ -246,8 +182,6 @@ class DictDatabase(context: Context) : SQLiteOpenHelper(context.applicationConte
         }
         return roots.distinct()
     }
-
-    // ==================== TAG SEARCH ====================
 
     fun searchByTag(tag: String, query: String = ""): List<Map<String, String>> {
         val cleanQuery = query.trim().removeSurrounding("\"")
@@ -267,29 +201,14 @@ class DictDatabase(context: Context) : SQLiteOpenHelper(context.applicationConte
             else -> searchEnglish(query)
         }
 
-        // Fallback: if Arabic search returns nothing, try without last letter
-        // Fallback: if Arabic search returns nothing, try findLemma for conjugated forms
-        val finalResults = if (isArabic && searchResults.isEmpty()) {
-            val lemma = findLemma(cleanQuery)
-            if (lemma != null) {
-                android.util.Log.d("SEARCH_DEBUG", "findLemma('$cleanQuery') found: ${lemma["word"]}")
-                listOf(lemma)
-            } else if (cleanQuery.length > 1) {
-                // Try without last letter
-                val fallback = searchArabic(cleanQuery.dropLast(1))
-                android.util.Log.d("SEARCH_DEBUG", "Fallback: '${cleanQuery.dropLast(1)}' returned ${fallback.size} results")
-                fallback
-            } else {
-                searchResults
-            }
+        val finalResults = if (isArabic && searchResults.isEmpty() && cleanQuery.length > 1) {
+            searchArabic(cleanQuery.dropLast(1))
         } else {
             searchResults
         }
 
-        // Filter by tag
         val taggedResults = finalResults.filter { word -> matchesTag(word, tag) }
 
-        // For Arabic results, detect if it's a form of another word (e.g. feminine, plural)
         val enrichedResults = if (isArabic && taggedResults.isNotEmpty()) {
             taggedResults.map { word ->
                 val searchedWord = cleanQuery
@@ -303,7 +222,7 @@ class DictDatabase(context: Context) : SQLiteOpenHelper(context.applicationConte
                         conjugatedForm.endsWith("ِينَ") || conjugatedForm.endsWith("ين") -> "pl obl"
                         conjugatedForm.endsWith("ُونَ") || conjugatedForm.endsWith("ون") -> "pl masc nom"
                         conjugatedForm.endsWith("َانِ") || conjugatedForm.endsWith("ان") -> "dual nom"
-                        conjugatedForm.endsWith("َيْنِ") || conjugatedForm.endsWith("ين") -> "dual obl"
+                        conjugatedForm.endsWith("َيْنِ") -> "dual obl"
                         else -> "form"
                     }
                     mutable["conjugated_form"] = conjugatedForm
@@ -317,6 +236,63 @@ class DictDatabase(context: Context) : SQLiteOpenHelper(context.applicationConte
         }
 
         return enrichedResults
+    }
+
+    private fun searchArabicExact(q: String): List<Map<String, String>> {
+        val exact = query(
+            "SELECT w.*, GROUP_CONCAT(s.definition, ' ||| ') as defs FROM words w LEFT JOIN senses s ON w.id = s.${getFkCol(readableDatabase)} WHERE w.word = ? GROUP BY w.id ORDER BY w.frequency_rank ASC LIMIT 30", q
+        )
+        return if (exact.isNotEmpty()) exact else searchArabic(q)
+    }
+
+    private fun searchArabicWildcard(q: String): List<Map<String, String>> {
+        return query(
+            "SELECT DISTINCT w.*, GROUP_CONCAT(s.definition, ' ||| ') as defs FROM words w LEFT JOIN senses s ON w.id = s.${getFkCol(readableDatabase)} WHERE w.word LIKE ? GROUP BY w.id ORDER BY w.frequency_rank ASC LIMIT 50",
+            q.trim().replace("*", "%").replace("?", "_")
+        )
+    }
+
+
+    fun findLemmaByForm(conjugatedWord: String): Map<String, String>? {
+        val norm = normalizeArabicForSearch(conjugatedWord)
+        val fk = getFkCol(readableDatabase)
+
+        val result = query(
+            "SELECT w.*, GROUP_CONCAT(s.definition, ' ||| ') as defs, f.form as conjugated_form " +
+                    "FROM words w INNER JOIN forms f ON w.id = f.word_id " +
+                    "LEFT JOIN senses s ON w.id = s.$fk " +
+                    "WHERE f.normalizedArabic = ? GROUP BY w.id LIMIT 1", norm
+        ).firstOrNull()
+
+        if (result != null) {
+            val conjugatedForm = result["conjugated_form"] ?: ""
+            val word = result["word"] ?: ""
+
+            val formInfo = when {
+                conjugatedForm.startsWith("ي") && conjugatedForm.length > word.length -> "3ms present"
+                conjugatedForm.startsWith("ت") && conjugatedForm.length > word.length -> "3fs/2ms present"
+                conjugatedForm.startsWith("أ") && conjugatedForm.length > word.length -> "1s present"
+                conjugatedForm.startsWith("ن") && conjugatedForm.length > word.length -> "1p present"
+                conjugatedForm.endsWith("تْ") || conjugatedForm.endsWith("تَ") -> "past"
+                conjugatedForm.endsWith("وا") -> "3mp past"
+                conjugatedForm != word -> "form"
+                else -> ""
+            }
+
+            val mutable = result.toMutableMap()
+            if (formInfo.isNotBlank()) {
+                mutable["forms_info"] = formInfo
+            }
+            return mutable
+        }
+        return null
+    }
+
+    fun searchEnglishWildcard(q: String): List<Map<String, String>> {
+        return query(
+            "SELECT DISTINCT w.*, GROUP_CONCAT(s.definition, ' ||| ') as defs FROM words w LEFT JOIN senses s ON w.id = s.${getFkCol(readableDatabase)} WHERE s.definition LIKE ? GROUP BY w.id ORDER BY w.frequency_rank ASC LIMIT 50",
+            q.trim().replace("*", "%").replace("?", "_")
+        )
     }
 
     private fun matchesTag(word: Map<String, String>, tag: String): Boolean {
@@ -358,12 +334,12 @@ class DictDatabase(context: Context) : SQLiteOpenHelper(context.applicationConte
         }
 
         val sql = """
-        SELECT DISTINCT w.*, GROUP_CONCAT(s.definition, ' ||| ') as defs 
-        FROM words w LEFT JOIN senses s ON w.id = s.$fk
-        $fromExtra
-        WHERE $condition
-        GROUP BY w.id ORDER BY w.frequency_rank ASC LIMIT 50
-    """
+            SELECT DISTINCT w.*, GROUP_CONCAT(s.definition, ' ||| ') as defs 
+            FROM words w LEFT JOIN senses s ON w.id = s.$fk
+            $fromExtra
+            WHERE $condition
+            GROUP BY w.id ORDER BY w.frequency_rank ASC LIMIT 50
+        """
 
         val results = mutableListOf<Map<String, String>>()
         db.rawQuery(sql, null).use { cursor ->
@@ -376,26 +352,9 @@ class DictDatabase(context: Context) : SQLiteOpenHelper(context.applicationConte
         return results
     }
 
-    private fun searchArabicExact(q: String): List<Map<String, String>> {
-        val exact = query(
-            "SELECT w.*, GROUP_CONCAT(s.definition, ' ||| ') as defs FROM words w LEFT JOIN senses s ON w.id = s.${getFkCol(readableDatabase)} WHERE w.word = ? GROUP BY w.id ORDER BY w.frequency_rank ASC LIMIT 30", q
-        )
-        return if (exact.isNotEmpty()) exact else searchArabic(q)
-    }
-
-    private fun searchArabicWildcard(q: String): List<Map<String, String>> {
-        return query(
-            "SELECT DISTINCT w.*, GROUP_CONCAT(s.definition, ' ||| ') as defs FROM words w LEFT JOIN senses s ON w.id = s.${getFkCol(readableDatabase)} WHERE w.word LIKE ? GROUP BY w.id ORDER BY w.frequency_rank ASC LIMIT 50",
-            q.trim().replace("*", "%").replace("?", "_")
-        )
-    }
-
     fun getAllTags(): List<String> {
-        val tags = mutableListOf("noun", "adjective", "verb", "feminine", "plural", "masdar", "alt_form")
-        return tags
+        return listOf("noun", "adjective", "verb", "feminine", "plural", "masdar", "alt_form")
     }
-
-    // ==================== NOUN FORMS ====================
 
     fun getNounForms(wordId: String): Map<String, String>? {
         val db = readableDatabase

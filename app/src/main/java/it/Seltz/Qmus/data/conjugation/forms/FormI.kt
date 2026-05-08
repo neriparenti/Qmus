@@ -1,14 +1,16 @@
 package it.Seltz.Qmus.data.conjugation.forms
 
+import android.util.Log
 import it.Seltz.Qmus.data.conjugation.ConjugationForm
 
 object FormI {
 
-    fun generate(r1: Char, r2: Char, r3: Char, pastVowel: String = "a", presVowel: String = "u"): List<ConjugationForm> {
-        // Normalize hamza variants to bare hamza (ء)
+    fun generate(r1: Char, r2: Char, r3: Char, pastVowel: String = "a", presVowel: String = "u"): List<ConjugationForm>  {
+
         val nr1 = when(r1) { 'أ'->'ء'; 'إ'->'ء'; 'ؤ'->'ء'; 'ئ'->'ء'; else->r1 }
         val nr2 = when(r2) { 'أ'->'ء'; 'إ'->'ء'; 'ؤ'->'ء'; 'ئ'->'ء'; else->r2 }
         val nr3 = when(r3) { 'أ'->'ء'; 'إ'->'ء'; 'ؤ'->'ء'; 'ئ'->'ء'; else->r3 }
+
 
         // Check if first radical is hamza - delegate to specialized class
         if (nr1 == 'ء') {
@@ -49,7 +51,7 @@ object FormI {
         )
 
         // Past: faʿala / faʿila / faʿula
-        val pastActiveStem = "${nr1}${vowelSign(pastVowel)}${nr2}َ${nr3}"
+        val pastActiveStem = "${nr1}َ${nr2}${vowelSign(pastVowel)}${nr3}"
         val pastPassiveStem = "${nr1}ُ${nr2}ِ${nr3}"
 
         for (s in pastSuffixes) {

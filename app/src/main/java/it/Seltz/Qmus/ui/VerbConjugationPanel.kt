@@ -1,18 +1,7 @@
 package it.Seltz.Qmus.ui
 
-import it.Seltz.Qmus.data.conjugation.VerbConjugator
 import it.Seltz.Qmus.data.conjugation.ConjugationForm
-import it.Seltz.Qmus.data.conjugation.ConjugationManager
 import it.Seltz.Qmus.data.DictDatabase
-import it.Seltz.Qmus.data.detectByRomanization
-import it.Seltz.Qmus.data.detectWazn
-import it.Seltz.Qmus.data.detectWaznSimple
-import it.Seltz.Qmus.data.HarakatGenerator
-import it.Seltz.Qmus.data.VocalizedLoader
-import it.Seltz.Qmus.data.Screen
-import it.Seltz.Qmus.data.SearchMode
-import it.Seltz.Qmus.data.NumberGrammar
-import it.Seltz.Qmus.theme.*
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
@@ -23,10 +12,12 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import it.Seltz.Qmus.theme.*
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -35,7 +26,9 @@ fun VerbConjugationPanel(
     root: String,
     verbForm: String,
     romanized: String,
-    pos: String
+    pos: String,
+    verbPattern: String = "",
+    wordId: String = ""
 ) {
     if (!pos.contains("verb", ignoreCase = true)) {
         Text("Not a verb", color = JshoGray)
@@ -44,180 +37,131 @@ fun VerbConjugationPanel(
 
     var selectedTense by remember { mutableStateOf("past") }
     var isPassive by remember { mutableStateOf(false) }
+    val context = LocalContext.current
 
-    val cleanWord = arabicWord.replace(Regex("[\\u064B-\\u065F\\u0640]"), "")
+    val patterns = remember(verbPattern) {
+        Regex("Form I: ([aiu])/([aiu])").findAll(verbPattern)
+            .map { "${it.groupValues[1]}/${it.groupValues[2]}" }
+            .toList()
+            .distinct()
+    }
 
-    val allForms = remember(cleanWord, root, verbForm, romanized) {
-        var effectiveRoot = if (root.isNotBlank()) root.replace(Regex("[\\s\\-،]"), "") else ""
+    var selectedPattern by remember(patterns) { mutableStateOf(patterns.firstOrNull() ?: "a/u") }
 
-        if (effectiveRoot.isBlank()) {
-            val bare = cleanWord.filter { it in '\u0621'..'\u064A' }
-            if (bare.length >= 3) {
-                effectiveRoot = when {
-                    bare.startsWith("أ") && bare.length == 4 -> bare.drop(1).chunked(1).joinToString("-")
-                    bare.contains("ا") && !bare.startsWith("ا") && bare.length == 4 -> bare.filter { it != 'ا' }.chunked(1).joinToString("-")
-                    else -> bare.take(3).chunked(1).joinToString("-")
-                }
+    val allForms = remember(wordId) {
+        android.util.Log.d("DB_DEBUG", "wordId='$wordId'")
+        if (wordId.isNotBlank()) {
+            val db = DictDatabase.getInstance(context)
+            val rows = db.getVerbFormsWithMetadata(wordId)
+            android.util.Log.d("DB_DEBUG", "rows=${rows.size}")
+            rows.map { row ->
+                val t = row["tense"] ?: ""
+                val m = row["mood"] ?: ""
+                val v = row["voice"] ?: ""
+                ConjugationForm(
+                    form = row["form"] ?: "",
+                    description = "$t $m $v".trim(),
+                    tense = t,
+                    mood = m,
+                    voice = v,
+                    person = row["person"] ?: "",
+                    gender = row["gender"] ?: "",
+                    number = row["number"] ?: ""
+                )
             }
-        }
-
-        if (effectiveRoot.isNotBlank()) {
-            val detectedForm = detectByRomanization(romanized, effectiveRoot)
-
-            // Check for Form III pattern: first radical + ā + second radical
-            val r = effectiveRoot.replace("-", "")
-            if (r.length >= 3) {
-                val r1 = r[0]; val r2 = r[1]
-                // Form III has ā between r1 and r2 in the past
-                if (cleanWord.contains("ا") && cleanWord.indexOf("ا") > 0 && cleanWord.indexOf("ا") < cleanWord.length - 1) {
-                    // Could be Form III
-                }
-            }
-
-            val form = when {
-                verbForm.isNotBlank() -> verbForm.trim()
-                detectedForm != null && detectedForm.startsWith("FORM_") -> detectedForm.removePrefix("FORM_").replace("_", " ").trim()
-                // Deduction from word pattern
-                cleanWord.startsWith("أ") && cleanWord.length == 4 -> "IV"
-                cleanWord.contains("ا") && !cleanWord.startsWith("ا") && cleanWord.length == 4 -> "III"
-                else -> "I"
-            }
-
-            VerbConjugator.generateByForm(effectiveRoot, form)
         } else {
             emptyList()
         }
     }
 
-    // Filtra per tempo/umore
+
     val filteredForms = remember(allForms, selectedTense, isPassive) {
         allForms.filter { form ->
-            val tense = form.tense.ifEmpty {
-                if (form.description.lowercase().contains("past") && !form.description.lowercase().contains("non-past")) "past" else "non-past"
-            }
-            val mood = form.mood.ifEmpty {
-                val d = form.description.lowercase()
-                when {
-                    d.contains("subjunctive") -> "subjunctive"
-                    d.contains("jussive") -> "jussive"
-                    d.contains("imperative") -> "imperative"
-                    d.contains("indicative") -> "indicative"
-                    d.contains("non-past") -> "indicative"
-                    else -> ""
-                }
-            }
-            val voice = form.voice.ifEmpty {
-                if (form.description.lowercase().contains("passive")) "passive" else "active"
-            }
+            val tense = form.tense
+            val mood = form.mood
+            val voice = form.voice.ifEmpty { "active" }
 
             val tenseMatch = when (selectedTense) {
                 "past" -> tense == "past"
                 "present" -> tense == "non-past" && mood == "indicative"
                 "subjunctive" -> mood == "subjunctive"
                 "jussive" -> mood == "jussive"
-                "imperative" -> mood == "imperative"
+                "imperative" -> tense == "imperative" || mood == "imperative"
                 else -> true
             }
-            val voiceMatch = if (isPassive) voice == "passive" else voice == "active"
+            val voiceMatch = if (isPassive) voice == "passive" else voice != "passive"
             tenseMatch && voiceMatch
         }
     }
 
     Column(modifier = Modifier.fillMaxWidth()) {
-        // Tense chips
+        if (patterns.size > 1) {
+            Row(
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                patterns.forEach { pattern ->
+                    val label = when(pattern) {
+                        "a/a" -> "a-a (فَعَلَ-يَفْعَلُ)"
+                        "a/i" -> "a-i (فَعَلَ-يَفْعِلُ)"
+                        "a/u" -> "a-u (فَعَلَ-يَفْعُلُ)"
+                        "i/a" -> "i-a (فَعِلَ-يَفْعَلُ)"
+                        "i/i" -> "i-i (فَعِلَ-يَفْعِلُ)"
+                        "u/u" -> "u-u (فَعُلَ-يَفْعُلُ)"
+                        else -> pattern
+                    }
+                    FilterChip(
+                        selected = selectedPattern == pattern,
+                        onClick = { selectedPattern = pattern },
+                        label = { Text(label, fontSize = 11.sp) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = JshoPurple, selectedLabelColor = Color.White,
+                            containerColor = Color.LightGray.copy(alpha = 0.3f), labelColor = Color.Black
+                        )
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.height(4.dp))
+        }
+
         Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState())
-                .padding(vertical = 8.dp),
+            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(vertical = 8.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            val tenses = listOf(
-                "past" to "Past",
-                "present" to "Present",
-                "subjunctive" to "Subjunctive",
-                "jussive" to "Jussive",
-                "imperative" to "Imperative"
-            )
-            tenses.forEach { (value, label) ->
+            listOf("past" to "Past", "present" to "Present", "subjunctive" to "Subjunctive", "jussive" to "Jussive", "imperative" to "Imperative").forEach { (value, label) ->
                 FilterChip(
                     selected = selectedTense == value,
                     onClick = { selectedTense = value },
                     label = { Text(label, fontSize = 13.sp) },
                     colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = JshoBlue,
-                        selectedLabelColor = Color.White,
-                        containerColor = Color.LightGray.copy(alpha = 0.3f),
-                        labelColor = Color.Black
+                        selectedContainerColor = JshoBlue, selectedLabelColor = Color.White,
+                        containerColor = Color.LightGray.copy(alpha = 0.3f), labelColor = Color.Black
                     )
                 )
             }
         }
 
-        // Active/Passive toggle
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 4.dp),
-            horizontalArrangement = Arrangement.End,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                if (isPassive) "Passive" else "Active",
-                fontSize = 12.sp,
-                color = if (isPassive) JshoBlue else JshoGray,
-                fontWeight = FontWeight.Medium
-            )
+        Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+            Text(if (isPassive) "Passive" else "Active", fontSize = 12.sp, color = if (isPassive) JshoBlue else JshoGray, fontWeight = FontWeight.Medium)
             Spacer(modifier = Modifier.width(8.dp))
-            Switch(
-                checked = isPassive,
-                onCheckedChange = { isPassive = it },
-                colors = SwitchDefaults.colors(
-                    checkedThumbColor = Color.White,
-                    checkedTrackColor = JshoBlue,
-                    uncheckedThumbColor = Color.White,
-                    uncheckedTrackColor = Color.LightGray
-                )
-            )
+            Switch(checked = isPassive, onCheckedChange = { isPassive = it }, colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = JshoBlue, uncheckedThumbColor = Color.White, uncheckedTrackColor = Color.LightGray))
         }
 
         Spacer(modifier = Modifier.height(8.dp))
 
-        // Tabella coniugazione
         if (filteredForms.isEmpty()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(24.dp),
-                contentAlignment = Alignment.Center
-            ) {
+            Box(modifier = Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
                 Text("No forms for this tense/mood", color = JshoGray)
             }
         } else {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = JshoWhite),
-                elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
-            ) {
+            Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = JshoWhite), elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)) {
                 Column(modifier = Modifier.padding(12.dp)) {
-                    // Header
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(JshoBrown.copy(alpha = 0.1f), RoundedCornerShape(4.dp))
-                            .padding(8.dp)
-                    ) {
+                    Row(modifier = Modifier.fillMaxWidth().background(JshoBrown.copy(alpha = 0.1f), RoundedCornerShape(4.dp)).padding(8.dp)) {
                         Text("Person", modifier = Modifier.weight(1f), fontSize = 11.sp, fontWeight = FontWeight.Bold, color = JshoBrown, textAlign = TextAlign.Center)
                         Text("Form", modifier = Modifier.weight(2f), fontSize = 11.sp, fontWeight = FontWeight.Bold, color = JshoBrown, textAlign = TextAlign.Center)
                     }
-
-                    // Rows
                     filteredForms.forEach { form ->
-                        val person = if (form.person.isNotBlank()) {
-                            formatPerson(form.person, form.gender, form.number)
-                        } else {
-                            extractPersonFromDesc(form.description)
-                        }
+                        val person = getPerson(form)
                         Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
                             Text(person, modifier = Modifier.weight(1f), fontSize = 12.sp, color = Color.DarkGray, textAlign = TextAlign.Center)
                             Text(form.form, modifier = Modifier.weight(2f), fontSize = 16.sp, fontWeight = FontWeight.Bold, color = JshoBlue, textAlign = TextAlign.Center)
@@ -228,6 +172,11 @@ fun VerbConjugationPanel(
             }
         }
     }
+}
+
+private fun getPerson(form: ConjugationForm): String {
+    if (form.person.isNotBlank()) return formatPerson(form.person, form.gender, form.number)
+    return extractPersonFromDesc(form.description)
 }
 
 private fun formatPerson(person: String, gender: String, number: String): String {
@@ -261,9 +210,6 @@ private fun extractPersonFromDesc(desc: String): String {
         desc.contains("third-person") && desc.contains("feminine") && desc.contains("singular") -> "She"
         desc.contains("third-person") && desc.contains("dual") -> "They two"
         desc.contains("third-person") && desc.contains("plural") -> "They"
-        desc.contains("imperative") && desc.contains("singular") -> "You!"
-        desc.contains("imperative") && desc.contains("dual") -> "You two!"
-        desc.contains("imperative") && desc.contains("plural") -> "You!"
         else -> desc.take(20)
     }
 }
